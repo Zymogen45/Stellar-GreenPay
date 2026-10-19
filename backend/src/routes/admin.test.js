@@ -12,10 +12,60 @@ jest.mock("../middleware/rateLimiter", () => ({
   createRateLimiter: () => (req, res, next) => next(),
 }));
 
+// pg-boss is ESM-only, so map it to the manual CJS shim in __mocks__.
+jest.mock("pg-boss");
+
+// The exported server app pulls in ESM-only native/queue dependencies and the
+// route modules that need them. Mock the heavy services (matching
+// profiles.test.js) so requiring ../server stays a CommonJS load, while the
+// admin router itself is left untouched and exercised through the mount.
+jest.mock("../services/sentry", () => ({
+  initSentry: jest.fn(),
+  errorHandler: () => (err, _req, _res, next) => next(err),
+}));
+jest.mock("../services/profileQueue", () => ({
+  start: jest.fn(),
+  enqueueAvatarProcessing: jest.fn().mockResolvedValue(undefined),
+}));
+jest.mock("../services/summaryQueue", () => ({ start: jest.fn() }));
+jest.mock("../services/statsRefreshQueue", () => ({ start: jest.fn() }));
+jest.mock("../services/indexerService", () => ({ startIndexer: jest.fn() }));
+jest.mock("../services/socketHandler", () => ({ registerSocketHandlers: jest.fn() }));
+jest.mock("../db/migrate", () => ({ runMigrations: jest.fn() }));
+jest.mock("../services/turrets", () => ({ startTurretsServer: jest.fn() }));
+jest.mock("../services/stellar", () => ({
+  isStellarTimeoutError: jest.fn(() => false),
+  server: {},
+}));
+jest.mock("../services/metrics", () => ({
+  metricsHandler: (_req, res) => res.end(),
+  countRequest: jest.fn(),
+  startQueueRefresh: jest.fn(),
+}));
+
+const mockPassThroughRouter = (_req, _res, next) => next();
+jest.mock("../routes/projects", () => mockPassThroughRouter);
+jest.mock("../routes/uploads", () => mockPassThroughRouter);
+jest.mock("../routes/donations", () => mockPassThroughRouter);
+jest.mock("../routes/stats", () => mockPassThroughRouter);
+jest.mock("../routes/health", () => mockPassThroughRouter);
+jest.mock("../routes/readiness", () => mockPassThroughRouter);
+jest.mock("../routes/impact", () => mockPassThroughRouter);
+jest.mock("../routes/subscriptions", () => mockPassThroughRouter);
+jest.mock("../routes/referrals", () => mockPassThroughRouter);
+jest.mock("../routes/recurringDonations", () => mockPassThroughRouter);
+jest.mock("../routes/auth", () => mockPassThroughRouter);
+jest.mock("../routes/ratings", () => mockPassThroughRouter);
+jest.mock("../routes/teams", () => mockPassThroughRouter);
+
 process.env.ADMIN_USERNAME = "admin";
 process.env.ADMIN_PASSWORD = "testpass";
 process.env.ADMIN_API_KEY = "test-admin-key";
 process.env.JWT_SECRET = "test-secret-for-jest";
+
+// The real exported app, with every non-admin route replaced by a pass-through
+// so the admin mount can be exercised end to end.
+const serverApp = require("../server");
 
 function buildApp() {
   const app = express();
@@ -106,7 +156,7 @@ describe("POST /api/admin/digest/preview", () => {
     const loginRes = await request(app).post("/api/admin/login").send({ username: "admin", password: "testpass" });
     const token = loginRes.body.data.token;
 
-    pool.query.mockImplementation(async (query, params) => {
+    pool.query.mockImplementation(async (query) => {
       if (query.includes("FROM projects")) {
         return { rows: [{ id: "project-123", name: "Solar Haven", co2_offset_kg: 300 }] };
       }
@@ -301,3 +351,131 @@ describe("adminTokenRequired middleware", () => {
     expect(res.body.user.authMethod).toBe("x-admin-key");
   });
 });
+
+describe("Admin match pledge endpoints", () => {
+  let app;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    app = buildApp();
+  });
+
+  it("POST /api/admin/projects/:projectId/match-pledges creates a new match pledge", async () => {
+    const token = signToken({ role: "admin", sub: "admin" }, "1h");
+    const mockPledge = {
+      id: "match-uuid-1",
+      project_id: "proj-1",
+      matcher_address: "GBVNQON4MFVGJXK5WT7VQJJZXFVHZJB6BHFWJCW7OF5BLNGOLZJQHIY",
+      cap_xlm: "1000.0000000",
+      multiplier: 2,
+      matched_xlm: "0",
+      expires_at: new Date(Date.now() + 86400000).toISOString(),
+      created_at: new Date().toISOString(),
+    };
+
+    pool.query.mockImplementation(async (query, params) => {
+      if (query.includes("SELECT id FROM projects")) {
+        return { rows: [{ id: "proj-1" }] };
+      }
+      if (query.includes("INSERT INTO donation_matches")) {
+        return { rows: [mockPledge] };
+      }
+      if (query.includes("INSERT INTO admin_audit_log")) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app)
+      .post("/api/admin/projects/proj-1/match-pledges")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        matcherAddress: "GBVNQON4MFVGJXK5WT7VQJJZXFVHZJB6BHFWJCW7OF5BLNGOLZJQHIY",
+        capXLM: "1000",
+        multiplier: 2,
+        expiresAt: new Date(Date.now() + 86400000).toISOString(),
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.id).toBe("match-uuid-1");
+    expect(res.body.data.capXLM).toBe("1000.0000000");
+    expect(res.body.data.multiplier).toBe(2);
+  });
+
+  it("DELETE /api/admin/match-pledges/:id cancels an existing match pledge", async () => {
+    const token = signToken({ role: "admin", sub: "admin" }, "1h");
+
+    pool.query.mockImplementation(async (query, params) => {
+      if (query.includes("UPDATE donation_matches SET expires_at")) {
+        return {
+          rows: [
+            {
+              id: "match-uuid-1",
+              project_id: "proj-1",
+              matcher_address: "GBVNQON4MFVGJXK5WT7VQJJZXFVHZJB6BHFWJCW7OF5BLNGOLZJQHIY",
+              cap_xlm: "1000.0000000",
+              matched_xlm: "250.0000000",
+            },
+          ],
+        };
+      }
+      if (query.includes("INSERT INTO admin_audit_log")) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app)
+      .delete("/api/admin/match-pledges/match-uuid-1")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.id).toBe("match-uuid-1");
+    expect(res.body.data.cancelled).toBe(true);
+  });
+});
+
+describe("Admin router mounts on the exported app", () => {
+  it("reaches the admin router at /api/admin (401, not the 404 handler)", async () => {
+    const res = await request(serverApp).get("/api/admin/me");
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe("Missing or malformed Authorization header");
+  });
+
+  it("reaches the admin router at /api/v1/admin (401, not the 404 handler)", async () => {
+    const res = await request(serverApp).get("/api/v1/admin/me");
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe("Missing or malformed Authorization header");
+  });
+
+  it("serves the admin audit log through both prefixes", async () => {
+    const token = signToken({ role: "admin", sub: "admin" }, "1h");
+    pool.query.mockImplementation(async (query) => {
+      if (query.includes("COUNT(*)")) return { rows: [{ total: "0" }] };
+      return { rows: [] };
+    });
+
+    const legacy = await request(serverApp)
+      .get("/api/admin/audit-log")
+      .set("Authorization", `Bearer ${token}`);
+    const versioned = await request(serverApp)
+      .get("/api/v1/admin/audit-log")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(legacy.status).toBe(200);
+    expect(versioned.status).toBe(200);
+    expect(legacy.body.success).toBe(true);
+    expect(versioned.body.success).toBe(true);
+  });
+
+  it("still 404s unknown paths under /api/admin", async () => {
+    const res = await request(serverApp).get("/api/admin/does-not-exist");
+
+    expect(res.status).toBe(404);
+  });
+});
+

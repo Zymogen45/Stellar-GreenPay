@@ -657,7 +657,7 @@ describe("POST /api/donations → broadcast hardening & room segmentation", () =
   test(
     "rejects a non-positive amount with 400 and emits nothing",
     async () => {
-      createMockClient(queryResult([{ id: "project-amt" }])); // project lookup, then amount check fails
+      createMockClient(queryResult([{ id: "project-amt" }])); // amount check fails before any DB query
 
       const socket = await connectClient();
       try {
@@ -903,8 +903,8 @@ describe("POST /api/donations → client disconnection mid-donation", () => {
       expect(res.status).toBe(201);
 
       // The full recordDonation pipeline ran to completion despite the drop:
-      // SELECT project → dedup → BEGIN → prevTotal → INSERT → matches → UPDATE → COMMIT.
-      expect(client.query).toHaveBeenCalledTimes(8);
+      // SELECT project → dedup → BEGIN → prevTotal → INSERT → matches → UPDATE → profile queries → COMMIT.
+      expect(client.query).toHaveBeenCalledTimes(10);
       const insertCall = client.query.mock.calls.find(([sql]) => /INSERT INTO donations/i.test(sql));
       expect(insertCall).toBeDefined();
       expect(insertCall[1]).toContain(donorAddress);

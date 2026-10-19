@@ -7,8 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Consolidated the three duplicated SSRF helpers (`middleware/ssrf.js`, `services/ssrfCheck.js`, `utils/ssrf.js`) into the single canonical `utils/ssrf.js`; the two redundant modules and their test suites were removed and every test case now guards the one implementation (#1551).
+
 ### Added
 
+- Spanish (`docs/README.es.md`) and French (`docs/README.fr.md`) translations of the README core sections, a language row at the top of `README.md`, and a translation-maintenance note in `CONTRIBUTING.md` (#1596).
+- Right-to-left (RTL) layout support for Arabic (`ar`) and Hebrew (`he`) with dynamic `dir="rtl"` attribute on `<html>`, logical CSS property helpers, and full Arabic (`ar.json`) translations covering navigation and donation flows (#1318).
+- Discord (`#greenpay`) and Telegram community channels in `README.md`, website footer, and README badges (#1319).
+- Hacktoberfest onboarding guide and catalog of 22 beginner and intermediate issues labeled `hacktoberfest` in `CONTRIBUTING.md` and `.github/hacktoberfest-issues.json` (#1321).
+- Configurable CPU/memory requests and limits (requests 100m/256Mi, limits 500m/512Mi) and a CPU-based (70%) Horizontal Pod Autoscaler for the GreenPay Helm chart (#1209).
+- Smart Contracts section in `CONTRIBUTING.md` covering Soroban test/build/WASM/deploy workflows and linking the deployment and integration docs (#1281).
+- Authentication section in `docs/api.md` documenting the JWT Bearer scheme, login/refresh flow, `X-Admin-Key` and wallet-signed alternatives, a curl example, and a public-vs-authenticated endpoint table (#1283).
+- Supported-versions table and concrete reporting channels (GitHub Security Advisories + private contact) in `SECURITY.md`, plus a README link to the security policy (#1284).
+- Dynamic Codecov coverage badges (backend + frontend) in `README.md`, a frontend unit-test coverage job in `frontend.yml`, and coverage upload to Codecov on every `main` push (#1286).
 - CHANGELOG.md — project changelog tracking.
 - Per-donation CO₂ offset in donation API responses via `co2OffsetKg` field, computed as `amount_xlm × co2_per_xlm / 1000` across all donation endpoints (#365).
 - On-chain USDC to XLM price conversion through a configured oracle adapter (#345).
@@ -23,9 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Donor profile page now pages through donation history 20 rows at a time with a "Load more" control instead of truncating the full list client-side (#1080).
 - New `STELLAR_TIMEOUT_MS` setting (default 15000) bounds Federation, stellar.toml, Horizon and Soroban RPC requests (#1097).
 - New `IMAGE_MODERATION_*` settings for enabling moderation, its confidence thresholds and its fail-open/fail-closed mode (#1101).
+- The mobile app validates Stellar addresses through the shared `mobile/utils/stellarValidation.ts` helper (SDK `StrKey` checksum plus the backend's wire format) instead of four independent copies of the `G[A-Z0-9]{55}` regex, and `mobile/package-lock.json` now resolves `@stellar/stellar-sdk` 17.x to match the backend and frontend majors (#1654).
 
 ### Fixed
 
+- Mounted the webhooks router at `/api/webhooks` and `/api/v1/webhooks` in `server.js`, so the documented webhook configuration, delivery-history and test-send endpoints no longer 404; documented the management endpoints in `docs/webhooks.md` and added mount integration tests that exercise the exported app (#1531).
+- The selective CSRF middleware now also exempts `/metrics` and `/api/metrics`, completing the health/readiness/metrics/notifications exemption set that the removed `server.js` `csrfProtection` block used to list; added regression tests for every exempt path plus a guard that `server.js` wires `createSelectiveCsrf` and no longer references the undefined `csrfProtection` helper (#1524).
+- Mounted the admin router at `/api/admin` and `/api/v1/admin` and restored the admin route imports (`uuid`, `logAdminAction`, `mapDonationRow`) dropped during a bad merge, so the admin dashboard, audit-log and moderation endpoints no longer 404 (#1526).
 - Horizon and Soroban RPC calls had no timeout, so a stalled Stellar node could pin an API worker indefinitely; a chain timeout is now answered with 503 Service Unavailable (#1097).
 - Removed duplicate `defaults` key in backend CI workflow (`backend.yml`) and updated `moduleResolution` to `bundler` with `ES2020` in backend `tsconfig.json`.
 - Fixed invalid donation UUID format in `projects.campaigns.integration.test.js` and mocked Stellar Horizon `getTransaction` in `donations.integration.test.js`.
@@ -39,6 +56,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The live donation feed detects a dropped Horizon SSE stream, shows a "Reconnecting…" banner, retries with exponential backoff, and merges anything that arrived while disconnected via a REST catch-up (#1071).
 - The selected language persists across sessions under `greenpay:locale` (migrated from the bare `locale` key), falls back to `navigator.language`, and sets `<html lang>` before first paint instead of re-rendering after hydration (#1073).
 
+
+### Fixed
+
+- Kubernetes manifests now pin container images to immutable git-SHA tags instead of the mutable `latest` tag, with CI injecting the short SHA at deploy time (#1212).
+
+### Fixed
+
+- `deploy.yml` now gates every release on a 120-second `/api/readiness` poll and automatically runs `helm rollback greenpay --wait` while notifying Slack `#deployments` when the check fails (#1214).
 
 ## [1.0.0] - 2025-01-01
 
@@ -57,3 +82,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Mobile app (React Native / Expo).
 - Browser extension.
 - Helm chart for Kubernetes deployment.
+
+### Changed
+
+- Standardized monorepo workspace layout across `backend`, `frontend`, `mobile`, `extension`, and `contracts` packages for initial `v1.0.0` baseline release.
+- Standardized release notes generation via `@semantic-release/changelog` in `.github/workflows/release.yml` to parse Conventional Commits into Keep a Changelog sections (#1290).
+
+### Fixed
+
+- Resolved initial Stellar Horizon testnet transaction confirmation handling and database migration ordering for `v1.0.0`.
+
+### Security
+
+- Enforced environment-variable-only secret configuration for Stellar and PostgreSQL credentials alongside Gitleaks secret scanning in CI.
+
+[Unreleased]: https://github.com/Emmy123222/Stellar-GreenPay/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Emmy123222/Stellar-GreenPay/releases/tag/v1.0.0

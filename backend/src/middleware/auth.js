@@ -115,6 +115,68 @@ function adminRequired(req, res, next) {
   }
 }
 
+/**
+ * Require a wallet-authentication JWT issued by POST /api/auth/token.
+ * The token is only issued after the caller proves control of a Stellar
+ * wallet by signing a one-time challenge, so `req.walletAddress` can be
+ * trusted as the authenticated donor identity (ADR-003).
+ */
+function walletAuthRequired(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Missing or malformed Authorization header" });
+  }
+  const token = authHeader.slice(7);
+  try {
+    const decoded = verifyToken(token);
+    if (decoded.type !== "wallet" || !decoded.sub) {
+      return res.status(401).json({ error: "Invalid wallet token" });
+    }
+    req.walletAddress = decoded.sub;
+    next();
+  } catch (err) {
+    if (err.name === "TokenExpiredError") {
+      return res.status(401).json({ error: "Wallet token expired" });
+    }
+    return res.status(401).json({ error: "Invalid wallet token" });
+  }
+}
+
+/**
+ * Accept either an admin (X-Admin-Key or admin Bearer token) or a wallet
+ * Bearer token. Sets req.admin or req.walletAddress — handlers decide what
+ * each may do (e.g. "author or admin").
+ */
+function walletOrAdminRequired(req, res, next) {
+  const adminKey = req.get("X-Admin-Key");
+  if (adminKey && isValidAdminKey(adminKey)) {
+    attachAdminKeyPrincipal(req);
+    return next();
+  }
+
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Missing or malformed Authorization header" });
+  }
+  try {
+    const decoded = verifyToken(authHeader.slice(7));
+    if (decoded.role === "admin" && decoded.type === "admin") {
+      req.admin = decoded;
+      return next();
+    }
+    if (decoded.type === "wallet" && decoded.sub) {
+      req.walletAddress = decoded.sub;
+      return next();
+    }
+    return res.status(401).json({ error: "Invalid token" });
+  } catch (err) {
+    if (err.name === "TokenExpiredError") {
+      return res.status(401).json({ error: "Token expired" });
+    }
+    return res.status(401).json({ error: "Invalid token" });
+  }
+}
+
 function adminTokenRequired(req, res, next) {
   const adminKey = req.get("X-Admin-Key");
   if (adminKey && isValidAdminKey(adminKey)) {
@@ -166,4 +228,4 @@ async function validateAdminAddress(req, res, next) {
   }
 }
 
-module.exports = { signToken, verifyToken, signAdminToken, verifyAdminToken, adminRequired, adminTokenRequired, adminKeyRequired, isValidAdminKey, validateAdminAddress };
+module.exports = { signToken, verifyToken, signAdminToken, verifyAdminToken, adminRequired, adminTokenRequired, adminKeyRequired, isValidAdminKey, validateAdminAddress, walletAuthRequired, walletOrAdminRequired };
